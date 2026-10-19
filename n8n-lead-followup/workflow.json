@@ -1,0 +1,468 @@
+{
+  "name": "Website assistant lead follow-up (ElevenLabs → Discord + Gmail)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "elevenlabs-postcall-REPLACE_WITH_RANDOM_PATH",
+        "responseMode": "onReceived",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "e222b4a3-f32f-40b7-b129-0cc47c21ae83",
+      "name": "ElevenLabs post-call webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1536,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the ElevenLabs post-call webhook and prepare the signature check.\n// Header format (confirmed on the first real event, 2026-10-18): \"t=<unix>,v0=<hex hmac sha256 of `${t}.${rawBody}`>\".\nconst item = $input.first();\nconst headers = item.json.headers || {};\nconst sig = String(headers['elevenlabs-signature'] || '');\nconst parts = Object.fromEntries(sig.split(',').map(p => { const i = p.indexOf('='); return [p.slice(0, i).trim(), p.slice(i + 1).trim()]; }));\nconst t = parts.t || '';\nlet raw = '';\nif (item.binary && item.binary.data && item.binary.data.data) raw = Buffer.from(item.binary.data.data, 'base64').toString('utf8');\nlet body = item.json.body;\nif ((!body || typeof body !== 'object') && raw) { try { body = JSON.parse(raw); } catch (e) { body = {}; } }\nbody = body || {};\nconst d = body.data || {};\nconst a = d.analysis || {};\nconst dc = a.data_collection_results || {};\nconst v = k => (dc[k] && dc[k].value !== undefined && dc[k].value !== null) ? dc[k].value : '';\nconst asBool = x => x === true || String(x).toLowerCase() === 'true';\nconst now = Math.floor(Date.now() / 1000);\nreturn [{ json: {\n  signed: `${t}.${raw}`,\n  v0: parts.v0 || '',\n  fresh: !!t && Math.abs(now - Number(t)) < 1800,\n  type: body.type || '',\n  conversation_id: d.conversation_id || '',\n  summary: String(a.transcript_summary || '').slice(0, 900),\n  first_name: String(v('first_name') || ''),\n  email: String(v('email') || '').trim(),\n  phone: String(v('phone') || '').trim(),\n  best_time: String(v('best_time') || ''),\n  business_name: String(v('business_name') || ''),\n  help_with: String(v('help_with') || '').slice(0, 500),\n  hours_per_week: v('hours_per_week'),\n  contact_preference: String(v('contact_preference') || 'none'),\n  summary_consent: asBool(v('summary_consent')),\n  wants_human_now: asBool(v('wants_human_now')),\n  delete_request: asBool(v('delete_request')),\n  duration_secs: (d.metadata && d.metadata.call_duration_secs) || 0\n} }];"
+      },
+      "id": "e682f12c-6511-4f32-82fe-7c38986777e6",
+      "name": "Parse payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1328,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "action": "hmac",
+        "type": "SHA256",
+        "value": "={{ $json.signed }}",
+        "dataPropertyName": "expected",
+        "secret": "PASTE_YOUR_ELEVENLABS_WEBHOOK_SECRET",
+        "encoding": "hex"
+      },
+      "id": "a4e391bf-7c07-4179-826a-ed00b24fe170",
+      "name": "HMAC (paste ElevenLabs secret)",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 1,
+      "position": [
+        -1104,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "d849d16c-278e-4d56-9658-2844f1d86058",
+              "leftValue": "={{ $json.expected === $json.v0 && $json.fresh === true && $json.type === 'post_call_transcription' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d8a51d86-94e8-45c3-b16e-cbbb7585f01e",
+      "name": "Signature valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -880,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "7269ea9d-6b2f-42e7-895c-9eb80182f8dc",
+              "leftValue": "={{ !!($json.email || $json.phone || $json.wants_human_now || $json.delete_request) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8e166a43-86ec-49f9-9d0d-a055bb33e924",
+      "name": "Has contact or wants a human?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -656,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "webhook",
+        "content": "=**🟣 Website lead{{ $json.first_name ? ': ' + $json.first_name : '' }}** wants **{{ $json.contact_preference }}**{{ $json.wants_human_now ? ' · asked for a human' : '' }}{{ $json.delete_request ? ' · ⚠️ DELETE REQUEST' : '' }}\n📞 {{ $json.phone || '—' }} · ✉️ {{ $json.email || '—' }} · 🕑 {{ $json.best_time || '—' }}\n🏢 {{ $json.business_name || '—' }}{{ $json.hours_per_week ? ' · ' + $json.hours_per_week + ' h/week' : '' }}\n💬 {{ $json.help_with || '—' }}\n📝 {{ $json.summary }}\nCallback: the team, same day (next business day after hours).{{ $json.contact_preference === 'email' && $json.email ? ' A Gmail draft is waiting in you@example.com.' : '' }}\nConversation: https://elevenlabs.io/app/agents/history/{{ $json.conversation_id }}",
+        "options": {}
+      },
+      "id": "782bfd66-f9c0-4502-b2eb-16aa80b1ceae",
+      "name": "Discord alert",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        80
+      ],
+      "credentials": {
+        "discordWebhookApi": {
+          "id": "REPLACE",
+          "name": "Discord #website-leads (set me)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "e100501e-297c-43ac-aeff-15d0d7450abe",
+              "leftValue": "={{ $('Has contact or wants a human?').item.json.contact_preference === 'email' && !!$('Has contact or wants a human?').item.json.email }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c6daf268-c0bf-4c8d-b8be-2c7cc2904b91",
+      "name": "Email chosen?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "subject": "=Your free audit with Acme",
+        "emailType": "text",
+        "message": "=Hi {{ $('Has contact or wants a human?').item.json.first_name || 'there' }},\n\nThanks for chatting with our assistant on our website.{{ $('Has contact or wants a human?').item.json.summary_consent && $('Has contact or wants a human?').item.json.help_with ? '\\n\\nYou mentioned: ' + $('Has contact or wants a human?').item.json.help_with : '' }}\n\nThe next step is a free audit: a short conversation about how your week runs, then a one-page plan with the top opportunities, estimated with your own numbers, within 3 business days of the audit chat. It's free, with no commitment.\n\nYou can pick a time here: https://calendly.com/YOUR-LINK, or just reply to this email.\n\nSteve\nAcme · hello@example.com · 555-0100",
+        "options": {
+          "sendTo": "={{ $('Has contact or wants a human?').item.json.email }}"
+        }
+      },
+      "id": "51066336-0f92-482f-a3eb-e1253c6f9b61",
+      "name": "Gmail draft to visitor",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE",
+          "name": "Gmail you@example.com (set me)"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "c39490cd-b79c-4642-9c5b-c7bf4cc1c0b9",
+      "name": "Rejected or not a lead (stop)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -656,
+        368
+      ]
+    },
+    {
+      "id": "837bdbde-a8fb-4e18-9691-d5ebfa5cc51b",
+      "name": "Confirmation check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        192
+      ],
+      "parameters": {
+        "jsCode": "// Decide whether the confirmation email may go out automatically.\n// SEND_MODE 'test': only to internal addresses (@example.com). 'live': to any visitor who chose email.\n// Flip to 'live' only after Steven has validated the test (DECISIONS 2026-10-18 \"Auto-send confirmation\").\nconst SEND_MODE = 'live'; // flip to 'live' after a validated test send\nconst lead = $('Has contact or wants a human?').item.json;\nconst email = String(lead.email || '').trim();\nconst validEmail = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$/.test(email);\nconst internal = /@(example\\.com)$/i.test(email);\nconst ok = validEmail && !lead.delete_request && lead.contact_preference === 'email' && (SEND_MODE === 'live' || internal);\nreturn [{ json: { ...lead, email, send_ok: ok, send_mode: SEND_MODE, send_reason: ok ? 'sent' : (!validEmail ? 'invalid email' : lead.delete_request ? 'delete request' : SEND_MODE !== 'live' ? 'test mode (external address)' : 'not email') } }];"
+      }
+    },
+    {
+      "id": "39c85a74-d480-4fe0-ac18-7f57db3d4e28",
+      "name": "OK to auto-send?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        224,
+        192
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "8878f8ef-283b-4c6a-af6b-a133e932c120",
+              "leftValue": "={{ $json.send_ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "949edbe2-52a8-4b20-9152-9d886943555f",
+      "name": "Gmail send confirmation",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        448,
+        112
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE",
+          "name": "Gmail account 2"
+        }
+      },
+      "parameters": {
+        "sendTo": "={{ $json.email }}",
+        "subject": "=Thanks for reaching out to Acme",
+        "emailType": "text",
+        "message": "=Hi {{ $json.first_name || 'there' }},\n\nThanks for chatting with our assistant on our website. This is a quick note to confirm we have your details.\n\nthe team will email you personally today, or the next business day if it's after hours or a weekend, about your free audit.\n\nIf you'd rather pick a time now: https://calendly.com/YOUR-LINK\nPrefer to talk? Call 555-0100.\n\nAcme · hello@example.com\n\nYou're receiving this because you asked our website assistant to follow up by email. Reply \"stop\" and we won't email you again.",
+        "options": {
+          "appendAttribution": false,
+          "senderName": "Acme"
+        }
+      }
+    },
+    {
+      "id": "b5cad976-a235-4458-bdbb-7378bc3be3cf",
+      "name": "Discord: confirmation sent",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [
+        672,
+        112
+      ],
+      "credentials": {
+        "discordWebhookApi": {
+          "id": "REPLACE",
+          "name": "Discord Webhook account 2"
+        }
+      },
+      "parameters": {
+        "authentication": "webhook",
+        "content": "=✉️ **Confirmation email sent** to {{ $('OK to auto-send?').item.json.email }}{{ $('OK to auto-send?').item.json.first_name ? ' (' + $('OK to auto-send?').item.json.first_name + ')' : '' }} · personal follow-up is a Gmail draft in you@example.com",
+        "options": {}
+      }
+    },
+    {
+      "id": "252d0bc2-01a2-446e-ab7c-fea07ab95529",
+      "name": "Discord: confirmation held",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [
+        448,
+        288
+      ],
+      "credentials": {
+        "discordWebhookApi": {
+          "id": "REPLACE",
+          "name": "Discord Webhook account 2"
+        }
+      },
+      "parameters": {
+        "authentication": "webhook",
+        "content": "=⏸️ Confirmation email **not** sent to {{ $json.email || '—' }} ({{ $json.send_reason }}) · send the Gmail draft by hand",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "ElevenLabs post-call webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse payload": {
+      "main": [
+        [
+          {
+            "node": "HMAC (paste ElevenLabs secret)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HMAC (paste ElevenLabs secret)": {
+      "main": [
+        [
+          {
+            "node": "Signature valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature valid?": {
+      "main": [
+        [
+          {
+            "node": "Has contact or wants a human?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected or not a lead (stop)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has contact or wants a human?": {
+      "main": [
+        [
+          {
+            "node": "Discord alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected or not a lead (stop)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Discord alert": {
+      "main": [
+        [
+          {
+            "node": "Email chosen?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email chosen?": {
+      "main": [
+        [
+          {
+            "node": "Gmail draft to visitor",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Confirmation check",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Confirmation check": {
+      "main": [
+        [
+          {
+            "node": "OK to auto-send?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OK to auto-send?": {
+      "main": [
+        [
+          {
+            "node": "Gmail send confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Discord: confirmation held",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail send confirmation": {
+      "main": [
+        [
+          {
+            "node": "Discord: confirmation sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all"
+  }
+}
